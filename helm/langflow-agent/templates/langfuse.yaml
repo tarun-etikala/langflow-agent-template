@@ -1,0 +1,90 @@
+{{- if .Values.langfuse.enabled }}
+# Langfuse Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-langfuse
+  labels:
+    app.kubernetes.io/name: langfuse
+    {{- include "langflow-agent.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: langfuse
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: langfuse
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: langfuse
+          image: {{ .Values.langfuse.image }}
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://{{ .Values.global.postgresql.username }}:{{ .Values.global.postgresql.password }}@{{ .Release.Name }}-postgresql:5432/langfuse"
+            - name: NEXTAUTH_URL
+              value: "https://{{ .Release.Name }}-langfuse.apps.{{ .Release.Namespace }}.example.com"
+            - name: NEXTAUTH_SECRET
+              value: "cluster-langfuse-secret"
+            - name: SALT
+              value: "cluster-langfuse-salt"
+          resources:
+            {{- toYaml .Values.langfuse.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/public/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/public/health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+---
+# Langfuse Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-langfuse
+  labels:
+    app.kubernetes.io/name: langfuse
+    {{- include "langflow-agent.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: langfuse
+    app.kubernetes.io/instance: {{ .Release.Name }}
+---
+# Langfuse Route (OpenShift)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ .Release.Name }}-langfuse
+  labels:
+    app.kubernetes.io/name: langfuse
+    {{- include "langflow-agent.labels" . | nindent 4 }}
+spec:
+  to:
+    kind: Service
+    name: {{ .Release.Name }}-langfuse
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

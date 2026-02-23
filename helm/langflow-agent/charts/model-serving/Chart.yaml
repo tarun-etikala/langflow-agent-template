@@ -1,0 +1,5 @@
+apiVersion: v2
+name: model-serving
+description: vLLM model serving via KServe InferenceService
+type: application
+version: 0.1.0

@@ -1,0 +1,143 @@
+{{- if .Values.langflow.enabled }}
+# PVC for Langflow data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-langflow-data
+  labels:
+    {{- include "langflow-agent.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Langflow Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-langflow
+  labels:
+    app.kubernetes.io/name: langflow
+    app.kubernetes.io/component: server
+    {{- include "langflow-agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.langflow.replicas | default 1 }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: langflow
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: langflow
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: server
+        {{- include "langflow-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: langflow
+          image: {{ .Values.langflow.image }}
+          ports:
+            - name: http
+              containerPort: 7860
+              protocol: TCP
+          env:
+            - name: LANGFLOW_HOST
+              value: "0.0.0.0"
+            - name: LANGFLOW_PORT
+              value: "7860"
+            - name: HOME
+              value: "/app/data"
+            - name: LANGFLOW_CONFIG_DIR
+              value: "/app/data/.langflow"
+            - name: LANGFLOW_DATABASE_URL
+              value: {{ include "langflow-agent.postgresUrl" . | quote }}
+            - name: LANGFLOW_ALEMBIC_LOG_FILE
+              value: "/app/data/alembic.log"
+            {{- if .Values.langfuse.enabled }}
+            - name: LANGFUSE_HOST
+              value: "http://{{ .Release.Name }}-langfuse:3000"
+            - name: LANGFUSE_PUBLIC_KEY
+              value: "pk-lf-b4e037d0-0e26-463d-b33c-5652dd9c5bb4"
+            - name: LANGFUSE_SECRET_KEY
+              value: "sk-lf-5fc0e25e-f7e3-4765-a53f-e67d63f8fb65"
+            {{- end }}
+          resources:
+            {{- toYaml .Values.langflow.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /.cache
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-langflow-data
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+---
+# Langflow Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-langflow
+  labels:
+    app.kubernetes.io/name: langflow
+    {{- include "langflow-agent.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7860
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: langflow
+    app.kubernetes.io/instance: {{ .Release.Name }}
+---
+# Langflow Route (OpenShift)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ .Release.Name }}-langflow
+  labels:
+    app.kubernetes.io/name: langflow
+    {{- include "langflow-agent.labels" . | nindent 4 }}
+spec:
+  to:
+    kind: Service
+    name: {{ .Release.Name }}-langflow
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

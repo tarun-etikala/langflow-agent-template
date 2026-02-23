@@ -1,0 +1,47 @@
+{{- if .Values.enabled }}
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: vllm-llama-runtime
+  annotations:
+    openshift.io/display-name: "vLLM NVIDIA GPU - Llama 3.1"
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+  containers:
+    - name: kserve-container
+      image: registry.redhat.io/rhaiis/vllm-cuda-rhel9@sha256:094db84a1da5e8a575d0c9eade114fa30f4a2061064a338e3e032f3578f8082a
+      command:
+        - python
+        - -m
+        - vllm.entrypoints.openai.api_server
+      args:
+        - "--port=8080"
+        - "--model=/mnt/models"
+        - "--served-model-name={{`{{.Name}}`}}"
+        - "--distributed-executor-backend=mp"
+        - "--max-model-len=16384"
+        - "--enable-auto-tool-choice"
+        - "--tool-call-parser=llama3_json"
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      ports:
+        - containerPort: 8080
+          name: http1
+          protocol: TCP
+      resources:
+        requests:
+          cpu: "2"
+          memory: 8Gi
+        limits:
+          cpu: "4"
+          memory: 16Gi
+  builtInAdapter:
+    modelLoadingTimeoutMillis: 600000
+{{- end }}

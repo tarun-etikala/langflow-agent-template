@@ -1,0 +1,13 @@
+enabled: true
+modelName: meta-llama/Llama-3.1-8B-Instruct
+runtime: vllm
+gpu:
+  count: 1
+resources:
+  requests:
+    cpu: "4"
+    memory: 16Gi
+  limits:
+    cpu: "8"
+    memory: 24Gi
+    nvidia.com/gpu: 1

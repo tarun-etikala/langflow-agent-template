@@ -1,0 +1,62 @@
+# ── Global ─────────────────────────────────────────────────────────────
+global:
+  postgresql:
+    username: langflow
+    password: langflow
+    database: langflow
+
+# ── Langflow ───────────────────────────────────────────────────────────
+langflow:
+  enabled: true
+  image: docker.io/langflowai/langflow:1.7.1
+  replicas: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  modelEndpoint: ""
+
+# ── PostgreSQL (Red Hat UBI) ──────────────────────────────────────────
+postgresql:
+  enabled: true
+  image: registry.redhat.io/rhel9/postgresql-15:latest
+  storage:
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# ── Langfuse (Tracing) ───────────────────────────────────────────────
+langfuse:
+  enabled: true
+  image: quay.io/rh-ee-mpk/langfuse:2-amd64
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# ── Model Serving (vLLM + KServe) ────────────────────────────────────
+modelServing:
+  enabled: false
+  modelName: meta-llama/Llama-3.1-8B-Instruct
+  runtime: vllm
+  gpu:
+    count: 1
+  resources:
+    requests:
+      cpu: "4"
+      memory: 16Gi
+    limits:
+      cpu: "8"
+      memory: 24Gi
+      nvidia.com/gpu: 1

@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+CHART_DIR="$PROJECT_ROOT/helm/langflow-agent"
+
+ensure_podman() {
+  if command -v podman &>/dev/null; then
+    return
+  fi
+
+  echo "Podman not found. Installing..."
+  if [[ "$(uname)" == "Darwin" ]]; then
+    if command -v brew &>/dev/null; then
+      brew install podman podman-compose
+      podman machine init
+      podman machine start
+    else
+      echo "Error: Homebrew not found. Install Podman manually: https://podman.io/docs/installation"
+      exit 1
+    fi
+  elif [[ -f /etc/debian_version ]]; then
+    sudo apt-get update && sudo apt-get install -y podman
+    pip install podman-compose
+  elif [[ -f /etc/redhat-release ]]; then
+    sudo dnf install -y podman
+    pip install podman-compose
+  else
+    echo "Error: Unsupported OS. Install Podman manually: https://podman.io/docs/installation"
+    exit 1
+  fi
+
+  # Verify
+  if ! command -v podman-compose &>/dev/null; then
+    pip install podman-compose
+  fi
+
+  echo "Podman installed successfully."
+}
+
+usage() {
+  echo "agentctl — CLI for managing Langflow agents on OpenShift"
+  echo ""
+  echo "Usage:"
+  echo "  agentctl deploy <image> [--namespace <ns>]    Deploy an agent to the cluster"
+  echo "  agentctl list [--all-namespaces]               List deployed agents"
+  echo "  agentctl status <agent-name> [-n <ns>]         Show agent status and metadata"
+  echo "  agentctl local-up                              Start local dev environment"
+  echo "  agentctl local-down                            Stop local dev environment"
+  echo "  agentctl build <flow-json> [registry] [tag]    Build & push agent image from a flow"
+  echo ""
+  echo "Examples:"
+  echo "  agentctl local-up"
+  echo "  agentctl build flows/my-agent.json quay.io/my-team v1.0"
+  echo "  agentctl deploy quay.io/my-team/langflow-my-agent:v1.0"
+  echo "  agentctl list"
+  echo "  agentctl status langflow-agent"
+  exit 1
+}
+
+require_oc_login() {
+  if ! oc whoami &>/dev/null; then
+    echo "Error: Not logged into an OpenShift cluster."
+    echo "Run: oc login <cluster-url>"
+    exit 1
+  fi
+}
+
+# ── deploy ────────────────────────────────────────────────────────────
+cmd_deploy() {
+  local IMAGE="${1:-}"
+  if [ -z "$IMAGE" ]; then
+    echo "Usage: agentctl deploy <image> [--namespace <ns>]"
+    exit 1
+  fi
+  shift
+
+  local NAMESPACE="langflow-agent"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --namespace|-n) NAMESPACE="$2"; shift 2 ;;
+      *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+  done
+
+  require_oc_login
+
+  local CLUSTER
+  CLUSTER=$(oc whoami --show-server)
+  echo "Deploying to: $CLUSTER"
+  echo "Namespace:    $NAMESPACE"
+  echo "Image:        $IMAGE"
+  echo ""
+
+  # Create namespace if needed
+  oc get namespace "$NAMESPACE" &>/dev/null || oc new-project "$NAMESPACE"
+
+  # Write override with the specified image
+  local OVERRIDE_FILE="$PROJECT_ROOT/values-override.yaml"
+  cat > "$OVERRIDE_FILE" << EOF
+langflow:
+  image: $IMAGE
+EOF
+
+  # Update deps and install
+  helm dependency update "$CHART_DIR" 2>/dev/null
+  helm upgrade --install langflow-agent "$CHART_DIR" \
+    --namespace "$NAMESPACE" \
+    -f "$OVERRIDE_FILE" \
+    --wait \
+    --timeout 10m
+
+  echo ""
+  echo "Deployed. Run 'agentctl status langflow-agent -n $NAMESPACE' to check."
+}
+
+# ── list ──────────────────────────────────────────────────────────────
+cmd_list() {
+  require_oc_login
+
+  local NS_FLAG=""
+  if [[ "${1:-}" == "--all-namespaces" || "${1:-}" == "-A" ]]; then
+    NS_FLAG="--all-namespaces"
+  fi
+
+  echo "Deployed agents:"
+  echo ""
+  oc get deployments $NS_FLAG \
+    -l app.kubernetes.io/part-of=langflow-agent \
+    -o custom-columns=\
+'NAME:.metadata.name,NAMESPACE:.metadata.namespace,READY:.status.readyReplicas,IMAGE:.spec.template.spec.containers[0].image'
+}
+
+# ── status ────────────────────────────────────────────────────────────
+cmd_status() {
+  require_oc_login
+
+  local AGENT_NAME="${1:-langflow-agent}"
+  shift || true
+
+  local NAMESPACE="langflow-agent"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --namespace|-n) NAMESPACE="$2"; shift 2 ;;
+      *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+  done
+
+  echo "Agent: $AGENT_NAME"
+  echo "Namespace: $NAMESPACE"
+  echo ""
+
+  # Helm release info
+  echo "── Helm Release ──"
+  helm status "$AGENT_NAME" -n "$NAMESPACE" 2>/dev/null || echo "No Helm release found."
+  echo ""
+
+  # Pod status
+  echo "── Pods ──"
+  oc get pods -n "$NAMESPACE" -l app.kubernetes.io/part-of=langflow-agent \
+    -o custom-columns='NAME:.metadata.name,STATUS:.status.phase,RESTARTS:.status.containerStatuses[0].restartCount'
+  echo ""
+
+  # Routes
+  echo "── Routes ──"
+  oc get routes -n "$NAMESPACE" -o custom-columns='NAME:.metadata.name,HOST:.spec.host'
+  echo ""
+
+  # kagenti labels from the running image
+  echo "── Agent Metadata (kagenti labels) ──"
+  local IMAGE
+  IMAGE=$(oc get deployment "${AGENT_NAME}-langflow" -n "$NAMESPACE" \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+  if [ -n "$IMAGE" ]; then
+    podman inspect "$IMAGE" --format '{{range $k, $v := .Config.Labels}}{{if eq (printf "%.7s" $k) "kagenti"}}  {{$k}}: {{$v}}{{printf "\n"}}{{end}}{{end}}' 2>/dev/null || \
+      echo "  (Could not inspect image labels. Pull the image first: podman pull $IMAGE)"
+  else
+    echo "  (No langflow deployment found)"
+  fi
+}
+
+# ── local-up ──────────────────────────────────────────────────────────
+cmd_local_up() {
+  ensure_podman
+  exec "$SCRIPT_DIR/deploy-local.sh"
+}
+
+# ── local-down ────────────────────────────────────────────────────────
+cmd_local_down() {
+  ensure_podman
+  cd "$PROJECT_ROOT/local"
+  podman-compose down
+  echo "Local environment stopped."
+}
+
+# ── build ─────────────────────────────────────────────────────────────
+cmd_build() {
+  ensure_podman
+  exec "$SCRIPT_DIR/export-flow.sh" "$@"
+}
+
+# ── main ──────────────────────────────────────────────────────────────
+COMMAND="${1:-}"
+shift || true
+
+case "$COMMAND" in
+  deploy)     cmd_deploy "$@" ;;
+  list)       cmd_list "$@" ;;
+  status)     cmd_status "$@" ;;
+  local-up)   cmd_local_up ;;
+  local-down) cmd_local_down ;;
+  build)      cmd_build "$@" ;;
+  *)          usage ;;
+esac

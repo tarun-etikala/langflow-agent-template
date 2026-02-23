@@ -1,0 +1,6 @@
+apiVersion: v2
+name: langflow-agent
+description: Langflow agentic template for OpenShift — deploys Langflow, PostgreSQL, Langfuse, and model serving (vLLM/KServe)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
