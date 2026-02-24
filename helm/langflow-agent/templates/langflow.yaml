@@ -38,6 +38,22 @@ spec:
         app.kubernetes.io/component: server
         {{- include "langflow-agent.selectorLabels" . | nindent 8 }}
     spec:
+      initContainers:
+        - name: init-db-permissions
+          image: {{ .Values.postgresql.image }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              for i in $(seq 1 30); do
+                pg_isready -h {{ .Release.Name }}-postgresql -p 5432 && break
+                echo "Waiting for PostgreSQL... ($i/30)"
+                sleep 5
+              done
+              PGPASSWORD={{ .Values.global.postgresql.password }} psql \
+                -h {{ .Release.Name }}-postgresql -U postgres \
+                -c "ALTER DATABASE {{ .Values.global.postgresql.database }} OWNER TO {{ .Values.global.postgresql.username }}"
+              echo "Database permissions configured."
       containers:
         - name: langflow
           image: {{ .Values.langflow.image }}
@@ -62,9 +78,15 @@ spec:
             - name: LANGFUSE_HOST
               value: "http://{{ .Release.Name }}-langfuse:3000"
             - name: LANGFUSE_PUBLIC_KEY
-              value: "pk-lf-b4e037d0-0e26-463d-b33c-5652dd9c5bb4"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-langfuse-credentials
+                  key: LANGFUSE_PUBLIC_KEY
             - name: LANGFUSE_SECRET_KEY
-              value: "sk-lf-5fc0e25e-f7e3-4765-a53f-e67d63f8fb65"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-langfuse-credentials
+                  key: LANGFUSE_SECRET_KEY
             {{- end }}
           resources:
             {{- toYaml .Values.langflow.resources | nindent 12 }}

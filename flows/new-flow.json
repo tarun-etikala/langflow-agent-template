@@ -1,0 +1,25 @@
+{
+  "name": "New Flow",
+  "description": "Conversation Catalyst Engine.",
+  "icon": null,
+  "icon_bg_color": null,
+  "gradient": null,
+  "data": {
+    "nodes": [],
+    "edges": [],
+    "viewport": {
+      "zoom": 1,
+      "x": 0,
+      "y": 0
+    }
+  },
+  "is_component": false,
+  "webhook": false,
+  "endpoint_name": null,
+  "tags": [],
+  "locked": false,
+  "mcp_enabled": true,
+  "action_name": null,
+  "action_description": null,
+  "access_type": "PRIVATE"
+}

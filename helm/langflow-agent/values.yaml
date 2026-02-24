@@ -37,6 +37,10 @@ postgresql:
 langfuse:
   enabled: true
   image: quay.io/rh-ee-mpk/langfuse:2-amd64
+  # Auto-generated credentials — override these or let defaults be used
+  publicKey: "pk-lf-langflow-agent"
+  secretKey: "sk-lf-langflow-agent"
+  adminPassword: "admin123"
   resources:
     requests:
       cpu: 250m

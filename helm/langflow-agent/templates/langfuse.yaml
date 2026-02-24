@@ -1,5 +1,5 @@
 {{- if .Values.langfuse.enabled }}
-# Langfuse Deployment
+# Langfuse Deployment — auto-provisions org, project, and API keys via LANGFUSE_INIT_* vars
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,6 +19,26 @@ spec:
         app.kubernetes.io/name: langfuse
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
+      # Create the langfuse database before Langfuse starts
+      initContainers:
+        - name: init-db
+          image: {{ .Values.postgresql.image }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              for i in $(seq 1 30); do
+                pg_isready -h {{ .Release.Name }}-postgresql -p 5432 && break
+                echo "Waiting for PostgreSQL... ($i/30)"
+                sleep 5
+              done
+              PGPASSWORD={{ .Values.global.postgresql.password }} psql \
+                -h {{ .Release.Name }}-postgresql -U postgres \
+                -tc "SELECT 1 FROM pg_database WHERE datname='langfuse'" | grep -q 1 || \
+              PGPASSWORD={{ .Values.global.postgresql.password }} psql \
+                -h {{ .Release.Name }}-postgresql -U postgres \
+                -c "CREATE DATABASE langfuse OWNER {{ .Values.global.postgresql.username }}"
+              echo "Langfuse database ready."
       containers:
         - name: langfuse
           image: {{ .Values.langfuse.image }}
@@ -27,14 +47,44 @@ spec:
               containerPort: 3000
               protocol: TCP
           env:
+            # Database
             - name: DATABASE_URL
               value: "postgresql://{{ .Values.global.postgresql.username }}:{{ .Values.global.postgresql.password }}@{{ .Release.Name }}-postgresql:5432/langfuse"
+            # Auth
             - name: NEXTAUTH_URL
-              value: "https://{{ .Release.Name }}-langfuse.apps.{{ .Release.Namespace }}.example.com"
+              value: "https://{{ .Release.Name }}-langfuse"
             - name: NEXTAUTH_SECRET
               value: "cluster-langfuse-secret"
             - name: SALT
               value: "cluster-langfuse-salt"
+            # Headless initialization — auto-creates org, project, user, and API keys
+            - name: LANGFUSE_INIT_ORG_ID
+              value: "langflow-org"
+            - name: LANGFUSE_INIT_ORG_NAME
+              value: "Langflow Agent"
+            - name: LANGFUSE_INIT_PROJECT_ID
+              value: "langflow-project"
+            - name: LANGFUSE_INIT_PROJECT_NAME
+              value: "Langflow Agent"
+            - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-langfuse-credentials
+                  key: LANGFUSE_PUBLIC_KEY
+            - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-langfuse-credentials
+                  key: LANGFUSE_SECRET_KEY
+            - name: LANGFUSE_INIT_USER_EMAIL
+              value: "admin@langflow.local"
+            - name: LANGFUSE_INIT_USER_NAME
+              value: "admin"
+            - name: LANGFUSE_INIT_USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-langfuse-credentials
+                  key: LANGFUSE_ADMIN_PASSWORD
           resources:
             {{- toYaml .Values.langfuse.resources | nindent 12 }}
           readinessProbe:

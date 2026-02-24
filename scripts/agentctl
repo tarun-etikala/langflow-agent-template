@@ -43,7 +43,12 @@ usage() {
   echo "agentctl — CLI for managing Langflow agents on OpenShift"
   echo ""
   echo "Usage:"
-  echo "  agentctl deploy <image> [--namespace <ns>]    Deploy an agent to the cluster"
+  echo "  agentctl deploy [image] [--namespace <ns>]     Deploy full stack to the cluster"
+  echo "  agentctl destroy [--namespace <ns>]            Remove all resources from the cluster"
+  echo "  agentctl flows save                            Local Langflow → flows/ directory"
+  echo "  agentctl flows push [-n <ns>]                  flows/ directory → Cluster Langflow"
+  echo "  agentctl flows pull [-n <ns>]                  Cluster Langflow → flows/ directory"
+  echo "  agentctl flows load                            flows/ directory → Local Langflow"
   echo "  agentctl list [--all-namespaces]               List deployed agents"
   echo "  agentctl status <agent-name> [-n <ns>]         Show agent status and metadata"
   echo "  agentctl local-up                              Start local dev environment"
@@ -52,10 +57,10 @@ usage() {
   echo ""
   echo "Examples:"
   echo "  agentctl local-up"
-  echo "  agentctl build flows/my-agent.json quay.io/my-team v1.0"
-  echo "  agentctl deploy quay.io/my-team/langflow-my-agent:v1.0"
-  echo "  agentctl list"
-  echo "  agentctl status langflow-agent"
+  echo "  agentctl deploy"
+  echo "  agentctl flows save"
+  echo "  agentctl flows push"
+  echo "  agentctl destroy"
   exit 1
 }
 
@@ -69,18 +74,17 @@ require_oc_login() {
 
 # ── deploy ────────────────────────────────────────────────────────────
 cmd_deploy() {
-  local IMAGE="${1:-}"
-  if [ -z "$IMAGE" ]; then
-    echo "Usage: agentctl deploy <image> [--namespace <ns>]"
-    exit 1
-  fi
-  shift
-
+  local IMAGE=""
   local NAMESPACE="langflow-agent"
+  local MODEL_SERVING="true"
+
+  # Parse args — image is optional (defaults to stock Langflow)
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --namespace|-n) NAMESPACE="$2"; shift 2 ;;
-      *) echo "Unknown option: $1"; exit 1 ;;
+      --no-model-serving) MODEL_SERVING="false"; shift ;;
+      -*) echo "Unknown option: $1"; exit 1 ;;
+      *) IMAGE="$1"; shift ;;
     esac
   done
 
@@ -88,31 +92,67 @@ cmd_deploy() {
 
   local CLUSTER
   CLUSTER=$(oc whoami --show-server)
-  echo "Deploying to: $CLUSTER"
-  echo "Namespace:    $NAMESPACE"
-  echo "Image:        $IMAGE"
+  echo ""
+  echo "========================================"
+  echo "  Deploying Langflow Agent to OpenShift"
+  echo "========================================"
+  echo ""
+  echo "  Cluster:        $CLUSTER"
+  echo "  Namespace:      $NAMESPACE"
+  echo "  Model Serving:  $MODEL_SERVING"
+  if [ -n "$IMAGE" ]; then
+    echo "  Langflow Image: $IMAGE"
+  fi
   echo ""
 
   # Create namespace if needed
   oc get namespace "$NAMESPACE" &>/dev/null || oc new-project "$NAMESPACE"
 
-  # Write override with the specified image
+  # Build helm args
+  local HELM_ARGS="--set modelServing.enabled=$MODEL_SERVING"
+
+  # Use custom image if specified, or check for values-override.yaml from agentctl build
   local OVERRIDE_FILE="$PROJECT_ROOT/values-override.yaml"
-  cat > "$OVERRIDE_FILE" << EOF
+  if [ -n "$IMAGE" ]; then
+    cat > "$OVERRIDE_FILE" << EOF
 langflow:
   image: $IMAGE
 EOF
+    HELM_ARGS="$HELM_ARGS -f $OVERRIDE_FILE"
+  elif [ -f "$OVERRIDE_FILE" ]; then
+    echo "Found values-override.yaml — using exported flow image."
+    HELM_ARGS="$HELM_ARGS -f $OVERRIDE_FILE"
+  fi
 
-  # Update deps and install
-  helm dependency update "$CHART_DIR" 2>/dev/null
+  # Deploy everything
+  echo "Installing/upgrading Helm release..."
   helm upgrade --install langflow-agent "$CHART_DIR" \
     --namespace "$NAMESPACE" \
-    -f "$OVERRIDE_FILE" \
+    $HELM_ARGS \
     --wait \
-    --timeout 10m
+    --timeout 15m
 
   echo ""
-  echo "Deployed. Run 'agentctl status langflow-agent -n $NAMESPACE' to check."
+
+  # Print access info
+  echo "========================================"
+  echo "  Deployment Complete"
+  echo "========================================"
+  echo ""
+  local LANGFLOW_HOST LANGFUSE_HOST
+  LANGFLOW_HOST=$(oc get route "${RELEASE_NAME:-langflow-agent}-langflow" -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+  LANGFUSE_HOST=$(oc get route "${RELEASE_NAME:-langflow-agent}-langfuse" -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+
+  if [ -n "$LANGFLOW_HOST" ]; then
+    echo "  Langflow UI:  https://$LANGFLOW_HOST"
+  fi
+  if [ -n "$LANGFUSE_HOST" ]; then
+    echo "  Langfuse:     https://$LANGFUSE_HOST"
+  fi
+  echo ""
+  echo "  Pods:"
+  oc get pods -n "$NAMESPACE" -o custom-columns='    NAME:.metadata.name,STATUS:.status.phase,READY:.status.containerStatuses[0].ready' --no-headers 2>/dev/null
+  echo ""
 }
 
 # ── list ──────────────────────────────────────────────────────────────
@@ -190,8 +230,15 @@ cmd_local_up() {
 cmd_local_down() {
   ensure_podman
   cd "$PROJECT_ROOT/local"
-  podman-compose down
-  echo "Local environment stopped."
+  if [[ "${1:-}" == "--force" || "${1:-}" == "-f" ]]; then
+    podman-compose down --force 2>/dev/null
+    podman pod rm -f -a 2>/dev/null
+    podman rm -f -a 2>/dev/null
+    echo "Local environment force-stopped and cleaned up."
+  else
+    podman-compose down
+    echo "Local environment stopped."
+  fi
 }
 
 # ── build ─────────────────────────────────────────────────────────────
@@ -200,12 +247,208 @@ cmd_build() {
   exec "$SCRIPT_DIR/export-flow.sh" "$@"
 }
 
+# ── flows ─────────────────────────────────────────────────────────────
+FLOWS_DIR="$PROJECT_ROOT/flows"
+
+# Helper: get auth token from a Langflow instance
+_langflow_auth() {
+  local URL="$1"
+  local TOKEN
+  TOKEN=$(curl -s "$URL/api/v1/login" -X POST \
+    -d "username=langflow&password=langflow" 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+  echo "$TOKEN"
+}
+
+# Helper: download flows from a Langflow instance to flows/ dir
+_flows_download_from() {
+  local URL="$1"
+  local LABEL="$2"
+
+  echo "Fetching flows from $LABEL ($URL)..."
+
+  local TOKEN
+  TOKEN=$(_langflow_auth "$URL")
+  local AUTH_HEADER=""
+  if [ -n "$TOKEN" ]; then
+    AUTH_HEADER="Authorization: Bearer $TOKEN"
+  fi
+
+  local RESPONSE
+  RESPONSE=$(curl -s --compressed -H "$AUTH_HEADER" "$URL/api/v1/flows/")
+
+  local COUNT
+  COUNT=$(echo "$RESPONSE" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+# Handle both list and paginated dict responses
+if isinstance(data, list):
+    print(len(data))
+elif isinstance(data, dict) and 'results' in data:
+    print(len(data['results']))
+else:
+    print(0)
+" 2>/dev/null || echo "0")
+
+  if [ "$COUNT" = "0" ]; then
+    echo "No flows found on $LABEL."
+    return
+  fi
+
+  mkdir -p "$FLOWS_DIR"
+
+  echo "$RESPONSE" | python3 -c "
+import sys, json, re, os
+
+data = json.load(sys.stdin)
+flows = data if isinstance(data, list) else data.get('results', [])
+flows_dir = '$FLOWS_DIR'
+
+for flow in flows:
+    name = flow.get('name', 'untitled')
+    safe_name = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    if not safe_name:
+        safe_name = flow['id'][:8]
+    # Remove environment-specific fields so the flow is portable
+    for key in ['id', 'user_id', 'folder_id', 'updated_at', 'created_at']:
+        flow.pop(key, None)
+    filepath = os.path.join(flows_dir, f'{safe_name}.json')
+    with open(filepath, 'w') as f:
+        json.dump(flow, f, indent=2)
+    print(f'  Saved: {filepath}')
+"
+  echo "Saved $COUNT flow(s) to $FLOWS_DIR/"
+}
+
+# Helper: upload flows from flows/ dir to a Langflow instance
+_flows_upload_to() {
+  local URL="$1"
+  local LABEL="$2"
+
+  if [ ! -d "$FLOWS_DIR" ] || [ -z "$(ls -A "$FLOWS_DIR"/*.json 2>/dev/null)" ]; then
+    echo "No flow files found in $FLOWS_DIR/"
+    echo "Run 'agentctl flows save' or 'agentctl flows pull' first."
+    exit 1
+  fi
+
+  local TOKEN
+  TOKEN=$(_langflow_auth "$URL")
+  local AUTH_HEADER=""
+  if [ -n "$TOKEN" ]; then
+    AUTH_HEADER="Authorization: Bearer $TOKEN"
+  fi
+
+  echo "Uploading flows to $LABEL ($URL)..."
+  for FLOW_FILE in "$FLOWS_DIR"/*.json; do
+    local FLOW_NAME
+    FLOW_NAME=$(basename "$FLOW_FILE" .json)
+    curl -s -X POST "$URL/api/v1/flows/upload/" \
+      -H "$AUTH_HEADER" \
+      -F "file=@$FLOW_FILE" > /dev/null 2>&1
+    echo "  Uploaded: $FLOW_NAME"
+  done
+  echo "Done."
+}
+
+cmd_flows() {
+  local SUBCMD="${1:-}"
+  shift || true
+
+  case "$SUBCMD" in
+    save) cmd_flows_save "$@" ;;
+    push) cmd_flows_push "$@" ;;
+    pull) cmd_flows_pull "$@" ;;
+    load) cmd_flows_load "$@" ;;
+    *)
+      echo "Usage: agentctl flows {save|push|pull|load}"
+      echo ""
+      echo "  save   Local Langflow → flows/ directory"
+      echo "  push   flows/ directory → Cluster Langflow"
+      echo "  pull   Cluster Langflow → flows/ directory"
+      echo "  load   flows/ directory → Local Langflow"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_flows_save() {
+  _flows_download_from "http://localhost:7860" "local Langflow"
+}
+
+cmd_flows_push() {
+  local NAMESPACE="langflow-agent"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --namespace|-n) NAMESPACE="$2"; shift 2 ;;
+      *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+  done
+
+  require_oc_login
+  local CLUSTER_HOST
+  CLUSTER_HOST=$(oc get route langflow-agent-langflow -n "$NAMESPACE" -o jsonpath='{.spec.host}')
+  _flows_upload_to "https://$CLUSTER_HOST" "cluster Langflow"
+}
+
+cmd_flows_pull() {
+  local NAMESPACE="langflow-agent"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --namespace|-n) NAMESPACE="$2"; shift 2 ;;
+      *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+  done
+
+  require_oc_login
+  local CLUSTER_HOST
+  CLUSTER_HOST=$(oc get route langflow-agent-langflow -n "$NAMESPACE" -o jsonpath='{.spec.host}')
+  _flows_download_from "https://$CLUSTER_HOST" "cluster Langflow"
+}
+
+cmd_flows_load() {
+  _flows_upload_to "http://localhost:7860" "local Langflow"
+}
+
+# ── destroy ───────────────────────────────────────────────────────────
+cmd_destroy() {
+  local NAMESPACE="langflow-agent"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --namespace|-n) NAMESPACE="$2"; shift 2 ;;
+      *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+  done
+
+  require_oc_login
+
+  echo ""
+  echo "This will remove all Langflow Agent resources from namespace '$NAMESPACE':"
+  echo "  - Langflow, Langfuse, PostgreSQL deployments"
+  echo "  - Model serving (InferenceService, ServingRuntime)"
+  echo "  - Persistent volumes (all data will be lost)"
+  echo ""
+  read -p "Are you sure? (y/N) " -n 1 -r
+  echo ""
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Cancelled."
+    exit 0
+  fi
+
+  echo "Destroying Langflow Agent in namespace '$NAMESPACE'..."
+  helm uninstall langflow-agent -n "$NAMESPACE" 2>/dev/null || echo "No Helm release found."
+  oc delete pvc --all -n "$NAMESPACE" 2>/dev/null || true
+  echo ""
+  echo "All resources removed from '$NAMESPACE'."
+}
+
 # ── main ──────────────────────────────────────────────────────────────
 COMMAND="${1:-}"
 shift || true
 
 case "$COMMAND" in
   deploy)     cmd_deploy "$@" ;;
+  destroy)    cmd_destroy "$@" ;;
+  flows)      cmd_flows "$@" ;;
   list)       cmd_list "$@" ;;
   status)     cmd_status "$@" ;;
   local-up)   cmd_local_up ;;

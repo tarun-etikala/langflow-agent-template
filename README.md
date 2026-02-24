@@ -1,129 +1,214 @@
 # Langflow Agent Template
 
-An agentic template for building, testing, and deploying Langflow-based AI agents on OpenShift.
+A template for building, testing, and deploying Langflow-based AI agents on OpenShift. Provides identical stacks for local development and cluster deployment, with CLI tooling to move flows between environments.
 
 ## Architecture
 
 ```
-LOCAL (podman-compose)              CLUSTER (Helm + OpenShift)
-┌─────────────────────┐             ┌─────────────────────────┐
-│  Langflow UI :7860  │             │  Langflow (Deployment)  │
-│         │           │             │         │               │
-│         ▼           │             │         ▼               │
-│  Ollama :11434      │             │  vLLM + KServe          │
-│  (local LLM)        │  export     │  (GPU model serving)    │
-│         │           │ ────────►   │         │               │
-│         ▼           │  flow       │         ▼               │
-│  PostgreSQL :5432   │             │  PostgreSQL (Bitnami)   │
-│         │           │             │         │               │
-│         ▼           │             │         ▼               │
-│  MLflow :5000       │             │  MLflow (Deployment)    │
-│  Langfuse :3000     │             │                         │
-└─────────────────────┘             └─────────────────────────┘
+LOCAL (podman-compose)                    CLUSTER (Helm + OpenShift)
+┌──────────────────────────┐              ┌──────────────────────────┐
+│  Langflow UI  :7860      │              │  Langflow (Deployment)   │
+│         │                │              │         │                │
+│         ▼                │   flows/     │         ▼                │
+│  Ollama :11434           │ ◄──────────► │  vLLM + KServe           │
+│  (local LLM)             │   (Git)      │  (GPU model serving)     │
+│         │                │              │         │                │
+│         ▼                │              │         ▼                │
+│  PostgreSQL :5432        │              │  PostgreSQL (Red Hat)    │
+│         │                │              │         │                │
+│         ▼                │              │         ▼                │
+│  Langfuse :3000          │              │  Langfuse (Deployment)   │
+│  (tracing)               │              │  (tracing)               │
+└──────────────────────────┘              └──────────────────────────┘
 ```
 
-Both environments expose the same OpenAI-compatible API to Langflow, so flows built locally work on the cluster without changes.
-
-## Quick Start
-
-### Prerequisites
-
-- **Local**: Podman + podman-compose
-- **Cluster**: `oc` CLI + `helm` CLI + access to an OpenShift cluster
-
-### Local Development
-
-```bash
-# Start all services (Langflow, PostgreSQL, Ollama, Langfuse, MLflow)
-./scripts/deploy-local.sh
-
-# Open Langflow UI
-open http://localhost:7860
-
-# View traces in Langfuse
-open http://localhost:3000
-
-# View experiments in MLflow
-open http://localhost:5000
-```
-
-### Deploy to OpenShift
-
-```bash
-# Login to your cluster
-oc login https://your-cluster:6443
-
-# Deploy the full stack
-./scripts/deploy-cluster.sh
-
-# Validate
-helm test langflow-agent -n langflow-agent
-```
-
-### Export a Flow to the Cluster
-
-```bash
-# Export a flow built in the local Langflow UI
-./scripts/export-flow.sh flows/example-rag-flow.json quay.io/your-org v1.0
-
-# This builds a container image with the flow baked in, pushes it,
-# then you deploy it via:
-helm upgrade langflow-agent ./helm/langflow-agent \
-  --set langflow.image=quay.io/your-org/langflow-example-rag-flow:v1.0
-```
+The `flows/` directory is the Git-trackable hub. Flows are exported as portable JSON files that can be synced between local and cluster environments.
 
 ## Project Structure
 
 ```
 langflow-agent-template/
-├── local/                         # Local dev environment
-│   ├── podman-compose.yml         # Langflow + PostgreSQL + Ollama + Langfuse + MLflow
+├── scripts/
+│   └── agentctl                   # CLI tool — all operations go through this
+│
+├── local/
+│   ├── podman-compose.yml         # Langflow + PostgreSQL + Ollama + Langfuse
+│   ├── init-db.sh                 # Creates langfuse database on first boot
 │   └── .env.example               # Environment variables
 │
-├── helm/langflow-agent/           # Cluster deployment (Helm)
-│   ├── Chart.yaml                 # Umbrella chart + Bitnami PostgreSQL dependency
+├── helm/langflow-agent/
+│   ├── Chart.yaml                 # Helm chart metadata
 │   ├── values.yaml                # All configurable values
-│   └── charts/
-│       ├── langflow/              # Langflow server + UI
-│       ├── model-serving/         # vLLM + KServe InferenceService
-│       └── mlflow/                # MLflow tracking server
+│   └── templates/
+│       ├── langflow.yaml          # Langflow Deployment + Service + Route
+│       ├── postgresql.yaml        # PostgreSQL Deployment + Secret + PVC
+│       ├── langfuse.yaml          # Langfuse Deployment + Service + Route
+│       ├── langfuse-secret.yaml   # Shared credentials (Langfuse <-> Langflow)
+│       └── charts/model-serving/  # vLLM + KServe subchart (disabled by default)
 │
-├── flows/                         # Langflow flow definitions
-│   └── example-rag-flow.json
-│
-└── scripts/
-    ├── deploy-local.sh            # Start local env
-    ├── deploy-cluster.sh          # Deploy to OpenShift
-    └── export-flow.sh             # Export flow → container image → registry
+└── flows/                         # Portable flow JSON files
+    ├── demo-flow-v1.json
+    └── ...
 ```
+
+## Prerequisites
+
+- **Local**: Podman + podman-compose (auto-installed by `agentctl` on macOS/Linux if missing)
+- **Cluster**: `oc` CLI + `helm` CLI + access to an OpenShift cluster with RHOAI installed
+
+## Setup
+
+Add `agentctl` to your PATH:
+
+```bash
+export PATH="$PATH:$(pwd)/scripts"
+```
+
+### Cluster Login
+
+To get the `oc login` command for your cluster:
+
+1. Open the OpenShift web console in your browser
+2. Click your username in the top-right corner
+3. Click **Copy login command**
+4. Click **Display Token**
+5. Copy the `oc login` command and run it in your terminal:
+
+```bash
+oc login --token=sha256~XXXX --server=https://api.your-cluster.example.com:6443
+```
+
+## Workflows
+
+### Local-First
+
+Build and test your agent locally, then push to the cluster.
+
+```bash
+# 1. Start local environment (Langflow + PostgreSQL + Ollama + Langfuse)
+agentctl local-up
+
+# 2. Build your agent flow in the Langflow UI
+open http://localhost:7860
+
+# 3. Run the flow and verify traces in Langfuse
+open http://localhost:3000    # Login: admin@langflow.local / admin123
+
+# 4. Save flows from local Langflow to the flows/ directory
+agentctl flows save
+
+# 5. Commit flows to Git
+git add flows/ && git commit -m "Add agent flow"
+
+# 6. Deploy the full stack to OpenShift
+oc login https://your-cluster:6443
+agentctl deploy
+
+# 7. Push flows to the cluster Langflow instance
+agentctl flows push
+
+# 8. Open the flow in cluster Langflow and verify it works
+#    (URL printed by agentctl deploy)
+
+# Cleanup
+agentctl destroy              # Remove cluster resources
+agentctl local-down           # Stop local environment
+```
+
+### Cloud-First
+
+Build your agent on the cluster, then pull to local for iteration.
+
+```bash
+# 1. Deploy the full stack to OpenShift
+oc login https://your-cluster:6443
+agentctl deploy
+
+# 2. Build your agent flow in the cluster Langflow UI
+#    (URL printed by agentctl deploy)
+
+# 3. Run the flow and verify traces in cluster Langfuse
+
+# 4. Pull flows from cluster Langflow to the flows/ directory
+agentctl flows pull
+
+# 5. Commit flows to Git
+git add flows/ && git commit -m "Add agent flow"
+
+# 6. Start local environment for iteration
+agentctl local-up
+
+# 7. Load flows into local Langflow
+agentctl flows load
+
+# 8. Open the flow in local Langflow
+open http://localhost:7860
+
+# Cleanup
+agentctl destroy              # Remove cluster resources
+agentctl local-down           # Stop local environment
+```
+
+## CLI Reference
+
+All operations go through `agentctl`:
+
+| Command | Description |
+|---------|-------------|
+| `agentctl local-up` | Start local dev environment |
+| `agentctl local-down [--force]` | Stop local environment (`--force` cleans stuck containers) |
+| `agentctl deploy [--namespace ns]` | Deploy full stack to OpenShift |
+| `agentctl destroy [--namespace ns]` | Remove all cluster resources |
+| `agentctl flows save` | Local Langflow &rarr; `flows/` directory |
+| `agentctl flows load` | `flows/` directory &rarr; Local Langflow |
+| `agentctl flows pull [-n ns]` | Cluster Langflow &rarr; `flows/` directory |
+| `agentctl flows push [-n ns]` | `flows/` directory &rarr; Cluster Langflow |
+| `agentctl build <flow.json> [registry] [tag]` | Build flow into a container image and push to registry |
+| `agentctl list [--all-namespaces]` | List deployed agents |
+| `agentctl status <name> [-n ns]` | Show agent status and metadata |
 
 ## Configuration
 
-### Disabling Components
+### Helm Values
 
-Deploy without model serving (use an external LLM endpoint):
-```bash
-helm upgrade --install langflow-agent ./helm/langflow-agent \
-  --set modelServing.enabled=false \
-  --set langflow.modelEndpoint=https://your-external-llm/v1
-```
-
-Deploy without MLflow:
-```bash
-helm upgrade --install langflow-agent ./helm/langflow-agent \
-  --set mlflow.enabled=false
-```
-
-### Key Values
+Key values in `helm/langflow-agent/values.yaml`:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `langflow.image` | Langflow container image | `langflowai/langflow:latest` |
+| `langflow.image` | Langflow container image | `langflowai/langflow:1.7.1` |
 | `langflow.replicas` | Number of Langflow replicas | `1` |
-| `langflow.modelEndpoint` | LLM API endpoint URL | In-cluster KServe service |
-| `postgresql.enabled` | Deploy PostgreSQL | `true` |
-| `modelServing.enabled` | Deploy vLLM + KServe | `true` |
+| `langfuse.enabled` | Deploy Langfuse for tracing | `true` |
+| `modelServing.enabled` | Deploy vLLM + KServe | `false` |
 | `modelServing.modelName` | Model to serve | `meta-llama/Llama-3.1-8B-Instruct` |
 | `modelServing.gpu.count` | GPUs for model serving | `1` |
-| `mlflow.enabled` | Deploy MLflow tracking server | `true` |
-| `mlflow.persistence.size` | MLflow artifact storage size | `10Gi` |
+
+### Deploy with Model Serving
+
+```bash
+agentctl deploy --no-model-serving    # Without GPU model serving (default)
+```
+
+To enable model serving, set `modelServing.enabled: true` in `values.yaml`. Requires a GPU node and KServe/RHOAI on the cluster.
+
+## Default Credentials
+
+| Service | Username | Password |
+|---------|----------|----------|
+| Langflow | (auto-login) | |
+| Langfuse (local) | admin@langflow.local | admin123 |
+| Langfuse (cluster) | admin@langflow.local | admin123 |
+| PostgreSQL | langflow | langflow |
+
+## Services & Ports (Local)
+
+| Service | URL |
+|---------|-----|
+| Langflow UI | http://localhost:7860 |
+| Langfuse | http://localhost:3000 |
+| Ollama API | http://localhost:11434 |
+
+## Notes
+
+- Flows pulled from the cluster may contain model components pointing to cluster-internal URLs. When loading these locally, update the model endpoint in the Langflow UI to point to Ollama (`http://ollama:11434/v1`).
+- `flows save` and `flows pull` download all flows including Langflow's built-in starter templates. Only user-created flows are relevant for version control.
+- Langfuse auto-provisioning (org, project, API keys) only runs on first database creation. If you need to reset, remove the PostgreSQL volume and restart.

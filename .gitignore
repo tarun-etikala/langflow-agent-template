@@ -1,0 +1,13 @@
+# Local environment state
+local/.env
+local/.ollama-enabled
+
+# Helm
+helm/langflow-agent/charts/*/charts/
+helm/langflow-agent/Chart.lock
+
+# Build artifacts
+values-override.yaml
+
+# OS
+.DS_Store
