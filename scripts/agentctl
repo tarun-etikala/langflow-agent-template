@@ -53,7 +53,7 @@ usage() {
   echo "  agentctl status <agent-name> [-n <ns>]         Show agent status and metadata"
   echo "  agentctl local-up                              Start local dev environment"
   echo "  agentctl local-down                            Stop local dev environment"
-  echo "  agentctl build [--prod] <flow-json> [reg] [tag] Build & push agent image (--prod for API-only runtime)"
+  echo "  agentctl build [--prod] [-n ns] <flow> [reg] [tag]  Build agent image (--prod for runtime, -n sets namespace)"
   echo ""
   echo "Examples:"
   echo "  agentctl local-up"
