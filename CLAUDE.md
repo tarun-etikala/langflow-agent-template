@@ -50,7 +50,7 @@ agentctl flows save                # Local Langflow -> flows/ dir
 agentctl flows load                # flows/ dir -> Local Langflow
 agentctl flows pull [-n ns]        # Cluster Langflow -> flows/ dir
 agentctl flows push [-n ns]        # flows/ dir -> Cluster Langflow
-agentctl build <flow.json> [reg]   # Build flow into container image
+agentctl build [--prod] <flow.json> [reg] [tag]  # Build flow image (--prod for API-only runtime)
 agentctl list [--all-namespaces]   # List deployed agents
 agentctl status <name> [-n ns]     # Show agent status
 ```
@@ -78,17 +78,26 @@ Both local and cluster use `LANGFUSE_INIT_*` env vars to auto-create org, projec
 - `flows push/load` uploads via `POST /api/v1/flows/upload/` (multipart file)
 - Auth via `POST /api/v1/login` with default credentials `langflow/langflow`
 
+### Production Deployment (Inner Loop → Outer Loop)
+- `agentctl build --prod` creates a **Langflow Runtime** image (backend-only, no UI) with the flow baked in
+- Without `--prod`, builds a full IDE image for development
+- Images are built for `linux/amd64` via `podman build --platform linux/amd64`
+- `export-flow.sh` generates `values-override.yaml` which `agentctl deploy` picks up automatically
+- When `--prod` is used, `values-override.yaml` includes `backendOnly: true`
+- The Helm template conditionally sets `LANGFLOW_BACKEND_ONLY=true` and `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true`
+- `LANGFLOW_LOAD_FLOWS_PATH` must point to a **directory** (not a file) — Langflow calls `iterdir()` on it
+- `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true` is required for Langflow >= 1.5 to allow unauthenticated API access with auto-login
+- Registry images must be public or the cluster needs a pull secret
+
 ### Custom vLLM Component
 Flows using the cluster's model serving have a custom `VLLMModel` component with hardcoded `base_url`. When moving flows between environments, the model endpoint URL must be changed:
 - Local: `http://ollama:11434/v1` with model `llama3.2`
-- Cluster: `http://llama-31-8b-instruct-predictor.langflow-agent.svc.cluster.local:8080/v1` with model `llama-31-8b-instruct`
+- Cluster: `http://llama-31-8b-instruct-predictor.<namespace>.svc.cluster.local:8080/v1` with model `llama-31-8b-instruct`
 
 ## Known Issues
 
-- `flows save`/`flows pull` downloads ALL flows including Langflow's built-in starter templates (34+), not just user-created flows
 - `flows push`/`flows load` creates duplicates if the flow already exists on the target
 - Langfuse INIT vars only run on first database creation — if the database already exists from a prior run, wipe volumes and restart
-- The README.md is outdated (still references MLflow which was removed)
 
 ## Images Used
 

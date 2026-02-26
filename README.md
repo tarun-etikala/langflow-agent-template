@@ -149,6 +149,48 @@ agentctl destroy              # Remove cluster resources
 agentctl local-down           # Stop local environment
 ```
 
+### Inner Loop to Outer Loop (Production)
+
+Develop locally, then package and deploy as a production API server.
+
+```bash
+# ── Inner Loop (Development) ──────────────────────────
+
+# 1. Start local environment
+agentctl local-up
+
+# 2. Build and test your agent flow in the Langflow UI
+open http://localhost:7860
+
+# 3. Save flows to the flows/ directory
+agentctl flows save
+
+# 4. Commit flows to Git
+git add flows/ && git commit -m "Add agent flow"
+
+# ── Outer Loop (Production) ──────────────────────────
+
+# 5. Build a production container image (backend-only, no UI)
+podman login quay.io
+agentctl build --prod flows/my-flow.json quay.io/myorg v1.0
+
+# 6. Deploy to OpenShift (picks up the built image automatically)
+oc login https://your-cluster:6443
+agentctl deploy --namespace my-agent-prod
+
+# 7. Test the agent via API
+curl -X POST https://<route>/api/v1/run/<flow-id> \
+  -H "Content-Type: application/json" \
+  -d '{"input_value": "Hello", "output_type": "chat", "input_type": "chat"}'
+
+# Cleanup
+agentctl destroy --namespace my-agent-prod
+agentctl local-down
+```
+
+The `--prod` flag builds a **Langflow Runtime** image — a headless API server without the UI.
+The generated `values-override.yaml` is automatically used by `agentctl deploy`.
+
 ## CLI Reference
 
 All operations go through `agentctl`:
@@ -163,7 +205,7 @@ All operations go through `agentctl`:
 | `agentctl flows load` | `flows/` directory &rarr; Local Langflow |
 | `agentctl flows pull [-n ns]` | Cluster Langflow &rarr; `flows/` directory |
 | `agentctl flows push [-n ns]` | `flows/` directory &rarr; Cluster Langflow |
-| `agentctl build <flow.json> [registry] [tag]` | Build flow into a container image and push to registry |
+| `agentctl build [--prod] <flow.json> [registry] [tag]` | Build flow into a container image (`--prod` for API-only runtime) |
 | `agentctl list [--all-namespaces]` | List deployed agents |
 | `agentctl status <name> [-n ns]` | Show agent status and metadata |
 
@@ -177,6 +219,7 @@ Key values in `helm/langflow-agent/values.yaml`:
 |-----------|-------------|---------|
 | `langflow.image` | Langflow container image | `langflowai/langflow:1.7.1` |
 | `langflow.replicas` | Number of Langflow replicas | `1` |
+| `langflow.backendOnly` | Run as Langflow Runtime (API-only, no UI) | `false` |
 | `langfuse.enabled` | Deploy Langfuse for tracing | `true` |
 | `modelServing.enabled` | Deploy vLLM + KServe | `false` |
 | `modelServing.modelName` | Model to serve | `meta-llama/Llama-3.1-8B-Instruct` |
@@ -210,5 +253,6 @@ To enable model serving, set `modelServing.enabled: true` in `values.yaml`. Requ
 ## Notes
 
 - Flows pulled from the cluster may contain model components pointing to cluster-internal URLs. When loading these locally, update the model endpoint in the Langflow UI to point to Ollama (`http://ollama:11434/v1`).
-- `flows save` and `flows pull` download all flows including Langflow's built-in starter templates. Only user-created flows are relevant for version control.
 - Langfuse auto-provisioning (org, project, API keys) only runs on first database creation. If you need to reset, remove the PostgreSQL volume and restart.
+- When pushing images to Quay.io or other registries, ensure the repository is **public** or create a pull secret on the cluster (`oc create secret docker-registry ...`).
+- Images are built for `linux/amd64` by default to match typical OpenShift cluster architecture.

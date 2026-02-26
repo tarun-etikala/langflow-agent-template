@@ -74,6 +74,12 @@ spec:
               value: {{ include "langflow-agent.postgresUrl" . | quote }}
             - name: LANGFLOW_ALEMBIC_LOG_FILE
               value: "/app/data/alembic.log"
+            {{- if .Values.langflow.backendOnly }}
+            - name: LANGFLOW_BACKEND_ONLY
+              value: "true"
+            - name: LANGFLOW_SKIP_AUTH_AUTO_LOGIN
+              value: "true"
+            {{- end }}
             {{- if .Values.langfuse.enabled }}
             - name: LANGFUSE_HOST
               value: "http://{{ .Release.Name }}-langfuse:3000"

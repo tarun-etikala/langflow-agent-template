@@ -10,6 +10,7 @@ langflow:
   enabled: true
   image: docker.io/langflowai/langflow:1.7.1
   replicas: 1
+  backendOnly: false    # Set to true for Langflow Runtime (API-only, no UI)
   resources:
     requests:
       cpu: 500m

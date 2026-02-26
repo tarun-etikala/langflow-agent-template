@@ -14,7 +14,7 @@ ensure_podman() {
   if [[ "$(uname)" == "Darwin" ]]; then
     if command -v brew &>/dev/null; then
       brew install podman podman-compose
-      podman machine init
+      podman machine init --memory 8192
       podman machine start
     else
       echo "Error: Homebrew not found. Install Podman manually: https://podman.io/docs/installation"
@@ -53,7 +53,7 @@ usage() {
   echo "  agentctl status <agent-name> [-n <ns>]         Show agent status and metadata"
   echo "  agentctl local-up                              Start local dev environment"
   echo "  agentctl local-down                            Stop local dev environment"
-  echo "  agentctl build <flow-json> [registry] [tag]    Build & push agent image from a flow"
+  echo "  agentctl build [--prod] <flow-json> [reg] [tag] Build & push agent image (--prod for API-only runtime)"
   echo ""
   echo "Examples:"
   echo "  agentctl local-up"
@@ -275,7 +275,7 @@ _flows_download_from() {
   fi
 
   local RESPONSE
-  RESPONSE=$(curl -s --compressed -H "$AUTH_HEADER" "$URL/api/v1/flows/")
+  RESPONSE=$(curl -sL --compressed -H "$AUTH_HEADER" "$URL/api/v1/flows/?remove_example_flows=true")
 
   local COUNT
   COUNT=$(echo "$RESPONSE" | python3 -c "
