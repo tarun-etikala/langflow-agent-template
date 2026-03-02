@@ -285,6 +285,23 @@ To enable model serving, set `modelServing.enabled: true` in `values.yaml`. Requ
 | Langfuse | http://localhost:3000 |
 | Ollama API | http://localhost:11434 |
 
+## Using a Third-Party Model (OpenAI, Anthropic, etc.)
+
+You don't need Ollama or vLLM if you want to use a third-party model provider. Just configure the model component directly in the Langflow UI:
+
+1. Open your flow in Langflow
+2. Use a built-in **OpenAI** / **Anthropic** / **OpenAI-compatible** component
+3. Set `api_base` to the provider's URL and `api_key` to your key
+
+This works the same locally and on cluster — no infrastructure changes needed.
+
+Alternatively, set the model endpoint in `local/.env`:
+
+```bash
+OPENAI_API_BASE=https://api.openai.com/v1
+OPENAI_API_KEY=sk-...
+```
+
 ## Notes
 
 - Flows pulled from the cluster may contain model components pointing to cluster-internal URLs. When loading these locally, update the model endpoint in the Langflow UI to point to Ollama (`http://ollama:11434/v1`).
