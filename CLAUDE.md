@@ -43,8 +43,8 @@ All operations go through `agentctl` (add `scripts/` to PATH):
 
 ```bash
 agentctl local-up                  # Start local dev environment
-agentctl local-down [--force]      # Stop local (--force cleans stuck containers)
-agentctl deploy [--namespace ns]   # Deploy full stack to OpenShift
+agentctl local-down [--force]      # Stop local (--force removes volumes too)
+agentctl deploy [--image img] [-n ns]  # Deploy to OpenShift (--image uses built image, without it pulls default from Docker Hub)
 agentctl destroy [--namespace ns]  # Remove all cluster resources
 agentctl flows save                # Local Langflow -> flows/ dir
 agentctl flows load                # flows/ dir -> Local Langflow
@@ -78,12 +78,13 @@ Both local and cluster use `LANGFUSE_INIT_*` env vars to auto-create org, projec
 - `flows push/load` uploads via `POST /api/v1/flows/upload/` (multipart file)
 - Auth via `POST /api/v1/login` with default credentials `langflow/langflow`
 
-### Production Deployment (Inner Loop → Outer Loop)
-- `agentctl build --prod` creates a **Langflow Runtime** image (backend-only, no UI) with the flow baked in
-- Without `--prod`, builds a full IDE image for development
+### Build & Deploy
+- `agentctl build <flow.json> [registry] [tag]` — builds full Langflow image (UI + flow baked in)
+- `agentctl build --prod` — builds **Langflow Runtime** image (backend-only, no UI)
+- `-n <namespace>` on build rewrites model endpoints (api_base, model_name) in the flow JSON to point to the cluster's KServe URL
 - Images are built for `linux/amd64` via `podman build --platform linux/amd64`
-- `export-flow.sh` generates `values-override.yaml` which `agentctl deploy` picks up automatically
-- When `--prod` is used, `values-override.yaml` includes `backendOnly: true`
+- `agentctl deploy --image <img>` — deploys with the built image
+- `agentctl deploy` (no `--image`) — no image is built or pushed; OpenShift pulls the default Langflow image from Docker Hub. Use `agentctl flows push` to upload flows after deploy.
 - The Helm template conditionally sets `LANGFLOW_BACKEND_ONLY=true` and `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true`
 - `LANGFLOW_LOAD_FLOWS_PATH` must point to a **directory** (not a file) — Langflow calls `iterdir()` on it
 - `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true` is required for Langflow >= 1.5 to allow unauthenticated API access with auto-login
@@ -91,8 +92,8 @@ Both local and cluster use `LANGFUSE_INIT_*` env vars to auto-create org, projec
 
 ### Custom vLLM Component
 Flows using the cluster's model serving have a custom `VLLMModel` component with hardcoded `base_url`. When moving flows between environments, the model endpoint URL must be changed:
-- Local: `http://ollama:11434/v1` with model `llama3.2`
-- Cluster: `http://llama-31-8b-instruct-predictor.<namespace>.svc.cluster.local:8080/v1` with model `llama-31-8b-instruct`
+- Local: `http://ollama:11434/v1` with model `qwen2.5:7b`
+- Cluster: `http://qwen25-7b-instruct-predictor.<namespace>.svc.cluster.local:8080/v1` with model `qwen25-7b-instruct`
 
 ## Known Issues
 

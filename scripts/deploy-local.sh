@@ -40,7 +40,11 @@ sleep 10
 
 # Pull Ollama model only if enabled and not already downloaded
 if [ "$USE_OLLAMA" = "yes" ]; then
-  OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2}"
+  # Source .env to get OLLAMA_MODEL if set
+  if [ -f "$LOCAL_DIR/.env" ]; then
+    OLLAMA_MODEL=$(grep -E '^OLLAMA_MODEL=' "$LOCAL_DIR/.env" | cut -d= -f2-)
+  fi
+  OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
   OLLAMA_CONTAINER=$(podman ps --filter "name=ollama" --format "{{.Names}}" | head -1)
 
   # Check if model is already pulled
@@ -57,7 +61,14 @@ echo ""
 echo "Local environment is ready."
 echo ""
 echo "  Langflow UI:  http://localhost:7860"
-echo "  Langfuse:     http://localhost:3000"
+echo "  Langfuse:     http://localhost:3000  (login: admin@langflow.local / admin123)"
 if [ "$USE_OLLAMA" = "yes" ]; then
   echo "  Ollama API:   http://localhost:11434"
 fi
+echo ""
+echo "  ⚠  If your flow was pulled from the cluster, update the model component:"
+echo "     Langflow UI > click model component > change api_base and model_name"
+echo ""
+echo "  Model endpoint:"
+echo "    Local (Ollama):   api_base=http://ollama:11434/v1  model_name=qwen2.5:7b"
+echo "    Cluster (vLLM):   api_base=<KServe InferenceService URL>/v1  model_name=qwen25-7b-instruct"

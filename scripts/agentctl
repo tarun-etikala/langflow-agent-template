@@ -43,7 +43,7 @@ usage() {
   echo "agentctl — CLI for managing Langflow agents on OpenShift"
   echo ""
   echo "Usage:"
-  echo "  agentctl deploy [image] [--namespace <ns>]     Deploy full stack to the cluster"
+  echo "  agentctl deploy [--image <img>] [--namespace <ns>]  Deploy full stack to the cluster"
   echo "  agentctl destroy [--namespace <ns>]            Remove all resources from the cluster"
   echo "  agentctl flows save                            Local Langflow → flows/ directory"
   echo "  agentctl flows push [-n <ns>]                  flows/ directory → Cluster Langflow"
@@ -78,13 +78,12 @@ cmd_deploy() {
   local NAMESPACE="langflow-agent"
   local MODEL_SERVING="true"
 
-  # Parse args — image is optional (defaults to stock Langflow)
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --namespace|-n) NAMESPACE="$2"; shift 2 ;;
+      --image|-i) IMAGE="$2"; shift 2 ;;
       --no-model-serving) MODEL_SERVING="false"; shift ;;
-      -*) echo "Unknown option: $1"; exit 1 ;;
-      *) IMAGE="$1"; shift ;;
+      *) echo "Unknown option: $1"; exit 1 ;;
     esac
   done
 
@@ -105,27 +104,31 @@ cmd_deploy() {
   fi
   echo ""
 
-  # Create namespace if needed
-  oc get namespace "$NAMESPACE" &>/dev/null || oc new-project "$NAMESPACE"
+  # Check if namespace already exists
+  if oc get namespace "$NAMESPACE" &>/dev/null; then
+    echo "Namespace '$NAMESPACE' already exists — deploying into it."
+    read -p "Continue? (Y/n) " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+      echo "Cancelled."
+      exit 0
+    fi
+  else
+    oc new-project "$NAMESPACE"
+  fi
 
   # Build helm args
   local HELM_ARGS="--set modelServing.enabled=$MODEL_SERVING"
 
-  # Use custom image if specified, or check for values-override.yaml from agentctl build
-  local OVERRIDE_FILE="$PROJECT_ROOT/values-override.yaml"
+  # Use custom image if specified via --image
   if [ -n "$IMAGE" ]; then
-    cat > "$OVERRIDE_FILE" << EOF
-langflow:
-  image: $IMAGE
-EOF
-    HELM_ARGS="$HELM_ARGS -f $OVERRIDE_FILE"
-  elif [ -f "$OVERRIDE_FILE" ]; then
-    echo "Found values-override.yaml — using exported flow image."
-    HELM_ARGS="$HELM_ARGS -f $OVERRIDE_FILE"
+    HELM_ARGS="$HELM_ARGS --set langflow.image=$IMAGE"
   fi
 
   # Deploy everything
   echo "Installing/upgrading Helm release..."
+  echo "  (waiting for all pods to be ready — this can take 5-10 minutes on first deploy)"
+  echo ""
   helm upgrade --install langflow-agent "$CHART_DIR" \
     --namespace "$NAMESPACE" \
     $HELM_ARGS \
@@ -147,12 +150,39 @@ EOF
     echo "  Langflow UI:  https://$LANGFLOW_HOST"
   fi
   if [ -n "$LANGFUSE_HOST" ]; then
-    echo "  Langfuse:     https://$LANGFUSE_HOST"
+    echo "  Langfuse:     https://$LANGFUSE_HOST  (login: admin@langflow.local / admin123)"
   fi
+  echo ""
+  echo "  Model endpoint (update in Langflow UI > model component, or in flows/*.json):"
+  echo "    Cluster (vLLM):   api_base=<KServe InferenceService URL>/v1  model_name=qwen25-7b-instruct"
+  echo "    Local (Ollama):   api_base=http://ollama:11434/v1  model_name=qwen2.5:7b"
   echo ""
   echo "  Pods:"
   oc get pods -n "$NAMESPACE" -o custom-columns='    NAME:.metadata.name,STATUS:.status.phase,READY:.status.containerStatuses[0].ready' --no-headers 2>/dev/null
   echo ""
+
+  # Show ready-to-use API curl command if Langflow route is available
+  if [ -n "$LANGFLOW_HOST" ]; then
+    local LANGFLOW_URL="https://$LANGFLOW_HOST"
+    local FLOW_ID
+    FLOW_ID=$(curl -s --compressed "$LANGFLOW_URL/api/v1/flows/" | python3 -c "
+import sys, json
+flows = json.load(sys.stdin)
+if flows:
+    print(flows[0]['id'])
+" 2>/dev/null || echo "")
+
+    if [ -n "$FLOW_ID" ]; then
+      echo "  API endpoint:"
+      echo "    POST $LANGFLOW_URL/api/v1/run/$FLOW_ID"
+      echo ""
+      echo "  Try it:"
+      echo "    curl -X POST '$LANGFLOW_URL/api/v1/run/$FLOW_ID' \\"
+      echo "      -H 'Content-Type: application/json' \\"
+      echo "      -d '{\"input_value\": \"Hello\", \"output_type\": \"chat\", \"input_type\": \"chat\"}'"
+      echo ""
+    fi
+  fi
 }
 
 # ── list ──────────────────────────────────────────────────────────────
@@ -234,7 +264,9 @@ cmd_local_down() {
     podman-compose down --force 2>/dev/null
     podman pod rm -f -a 2>/dev/null
     podman rm -f -a 2>/dev/null
-    echo "Local environment force-stopped and cleaned up."
+    echo "Removing volumes (all data will be lost)..."
+    podman volume rm local_postgres_data local_langflow_data local_ollama_data local_mlflow_data 2>/dev/null || true
+    echo "Local environment force-stopped and volumes removed."
   else
     podman-compose down
     echo "Local environment stopped."

@@ -71,12 +71,32 @@ if [ -n "$TARGET_NAMESPACE" ]; then
   python3 -c "
 import json, re, sys
 
+MODEL_URL = 'http://qwen25-7b-instruct-predictor.$TARGET_NAMESPACE.svc.cluster.local:8080/v1'
+MODEL_NAME = 'qwen25-7b-instruct'
+
 with open('$BUILD_DIR/flow.json') as f:
     flow = json.load(f)
 
 changed = False
 for node in flow.get('data', {}).get('nodes', []):
     template = node.get('data', {}).get('node', {}).get('template', {})
+    name = node.get('data', {}).get('node', {}).get('display_name', '?')
+
+    # Rewrite api_base field (built-in OpenAI/Ollama components)
+    if 'api_base' in template:
+        old_val = template['api_base'].get('value', '')
+        if old_val and ('ollama' in old_val or 'svc.cluster.local' in old_val or old_val):
+            template['api_base']['value'] = MODEL_URL
+            print(f'  Updated {name}: api_base -> {MODEL_URL}')
+            changed = True
+    if 'model_name' in template:
+        old_val = template['model_name'].get('value', '')
+        if old_val:
+            template['model_name']['value'] = MODEL_NAME
+            print(f'  Updated {name}: model_name -> {MODEL_NAME}')
+            changed = True
+
+    # Rewrite custom component code (vLLM component with hardcoded URLs)
     code = template.get('code', {}).get('value', '')
     if '.svc.cluster.local' in code:
         updated = re.sub(
@@ -86,8 +106,7 @@ for node in flow.get('data', {}).get('nodes', []):
         )
         if updated != code:
             template['code']['value'] = updated
-            name = node.get('data', {}).get('node', {}).get('display_name', '?')
-            print(f'  Updated: {name}')
+            print(f'  Updated {name}: custom component code')
             changed = True
 
 if changed:
@@ -159,21 +178,6 @@ else
   echo "Skipped push. To push later: podman push $IMAGE_NAME"
 fi
 
-# Write values override so deploy picks up this image automatically
-OVERRIDE_FILE="$PROJECT_ROOT/values-override.yaml"
-if [ "$PROD_MODE" = true ]; then
-  cat > "$OVERRIDE_FILE" << EOF
-langflow:
-  image: $IMAGE_NAME
-  backendOnly: true
-EOF
-else
-  cat > "$OVERRIDE_FILE" << EOF
-langflow:
-  image: $IMAGE_NAME
-EOF
-fi
-
 echo ""
-echo "Saved $OVERRIDE_FILE"
-echo "Next step: agentctl deploy"
+echo "Next step:"
+echo "  agentctl deploy --image $IMAGE_NAME"

@@ -1,5 +1,5 @@
 enabled: true
-modelName: meta-llama/Llama-3.1-8B-Instruct
+modelName: Qwen/Qwen2.5-7B-Instruct
 runtime: vllm
 gpu:
   count: 1

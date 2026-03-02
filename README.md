@@ -78,6 +78,22 @@ To check its status:
 podman machine list
 ```
 
+**Memory**: The Podman VM needs at least 8GB of memory. If it's set lower, increase it:
+
+```bash
+podman machine stop
+podman machine set --memory 8192
+podman machine start
+```
+
+**Platform**: The `platform` field in `local/podman-compose.yml` must match your machine's architecture. Update it if needed:
+
+| Machine | Platform |
+|---------|----------|
+| Mac (Apple Silicon) | `linux/arm64` |
+| Mac (Intel) | `linux/amd64` |
+| Linux (x86_64) | `linux/amd64` |
+
 ### Cluster Login
 
 To get the `oc login` command for your cluster:
@@ -163,9 +179,9 @@ agentctl destroy              # Remove cluster resources
 agentctl local-down           # Stop local environment
 ```
 
-### Inner Loop to Outer Loop (Production)
+### Build & Deploy (Production)
 
-Develop locally, then package and deploy as a production API server.
+Develop locally, then package and deploy as a container image.
 
 ```bash
 # ── Inner Loop (Development) ──────────────────────────
@@ -184,26 +200,31 @@ git add flows/ && git commit -m "Add agent flow"
 
 # ── Outer Loop (Production) ──────────────────────────
 
-# 5. Build a production container image (backend-only, no UI)
+# 5. Build a container image with the flow baked in
 podman login quay.io
-agentctl build --prod flows/my-flow.json quay.io/myorg v1.0
+agentctl build flows/my-flow.json quay.io/myorg v1.0             # full UI
+agentctl build --prod flows/my-flow.json quay.io/myorg v1.0      # headless API only
 
-# 6. Deploy to OpenShift (picks up the built image automatically)
+# 6. Deploy to OpenShift with the built image
 oc login https://your-cluster:6443
-agentctl deploy --namespace my-agent-prod
+agentctl deploy --image quay.io/myorg/langflow-my-flow:v1.0
 
-# 7. Test the agent via API
+# 7. Test the agent via API (URL printed by deploy)
 curl -X POST https://<route>/api/v1/run/<flow-id> \
   -H "Content-Type: application/json" \
   -d '{"input_value": "Hello", "output_type": "chat", "input_type": "chat"}'
 
 # Cleanup
-agentctl destroy --namespace my-agent-prod
+agentctl destroy
 agentctl local-down
 ```
 
-The `--prod` flag builds a **Langflow Runtime** image — a headless API server without the UI.
-The generated `values-override.yaml` is automatically used by `agentctl deploy`.
+- `agentctl build`: builds a full Langflow image with UI + flow baked in
+- `agentctl build --prod`: builds a **Langflow Runtime** image — headless API server, no UI
+- `agentctl deploy --image`: deploys with your built image
+- `agentctl deploy` (no `--image`): no image is built or pushed — OpenShift pulls the default Langflow image directly from Docker Hub. Use `agentctl flows push` to upload your flows after deploy.
+
+> **Note:** `agentctl build` will create a new repository in Quay.io when pushing. The repository defaults to **private**. You need to make it **public** in the Quay.io UI so that OpenShift can pull the image without a pull secret.
 
 ## CLI Reference
 
@@ -212,8 +233,8 @@ All operations go through `agentctl`:
 | Command | Description |
 |---------|-------------|
 | `agentctl local-up` | Start local dev environment |
-| `agentctl local-down [--force]` | Stop local environment (`--force` cleans stuck containers) |
-| `agentctl deploy [--namespace ns]` | Deploy full stack to OpenShift |
+| `agentctl local-down [--force]` | Stop local environment (`--force` removes volumes too) |
+| `agentctl deploy [--image img] [--namespace ns]` | Deploy full stack to OpenShift |
 | `agentctl destroy [--namespace ns]` | Remove all cluster resources |
 | `agentctl flows save` | Local Langflow &rarr; `flows/` directory |
 | `agentctl flows load` | `flows/` directory &rarr; Local Langflow |
@@ -236,7 +257,7 @@ Key values in `helm/langflow-agent/values.yaml`:
 | `langflow.backendOnly` | Run as Langflow Runtime (API-only, no UI) | `false` |
 | `langfuse.enabled` | Deploy Langfuse for tracing | `true` |
 | `modelServing.enabled` | Deploy vLLM + KServe | `false` |
-| `modelServing.modelName` | Model to serve | `meta-llama/Llama-3.1-8B-Instruct` |
+| `modelServing.modelName` | Model to serve | `Qwen/Qwen2.5-7B-Instruct` |
 | `modelServing.gpu.count` | GPUs for model serving | `1` |
 
 ### Deploy with Model Serving

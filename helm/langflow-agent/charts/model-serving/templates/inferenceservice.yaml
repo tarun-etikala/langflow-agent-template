@@ -2,7 +2,7 @@
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
-  name: llama-31-8b-instruct
+  name: qwen25-7b-instruct
   annotations:
     serving.kserve.io/deploymentMode: RawDeployment
   labels:
@@ -18,8 +18,8 @@ spec:
     model:
       modelFormat:
         name: vLLM
-      runtime: vllm-llama-runtime
-      storageUri: oci://registry.redhat.io/rhelai1/modelcar-llama-3-1-8b-instruct:1.5
+      runtime: vllm-qwen-runtime
+      storageUri: hf://Qwen/Qwen2.5-7B-Instruct
       resources:
         requests:
           cpu: "2"
