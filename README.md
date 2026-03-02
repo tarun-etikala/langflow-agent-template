@@ -64,6 +64,20 @@ Add `agentctl` to your PATH:
 export PATH="$PATH:$(pwd)/scripts"
 ```
 
+### Start Podman Machine
+
+The Podman machine must be running before using `agentctl local-up`. If it's not already started:
+
+```bash
+podman machine start
+```
+
+To check its status:
+
+```bash
+podman machine list
+```
+
 ### Cluster Login
 
 To get the `oc login` command for your cluster:
