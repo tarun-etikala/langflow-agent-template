@@ -1,0 +1,65 @@
+{{- if .Values.langflow.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-custom-components
+  labels:
+    {{- include "langflow-agent.labels" . | nindent 4 }}
+data:
+  kserve_vllm.py: |
+    from langchain_openai import ChatOpenAI
+
+    from langflow.base.models.model import LCModelComponent
+    from langflow.field_typing import LanguageModel
+    from langflow.io import FloatInput, IntInput, SecretStrInput, StrInput
+
+
+    class KServeVLLMComponent(LCModelComponent):
+        display_name = "KServe vLLM"
+        description = "Language model served via KServe + vLLM (OpenAI-compatible API)."
+        icon = "server"
+        name = "KServeVLLM"
+
+        inputs = LCModelComponent._base_inputs + [
+            StrInput(
+                name="api_base",
+                display_name="API Base URL",
+                info="KServe vLLM OpenAI-compatible endpoint.",
+                value="",
+                required=True,
+            ),
+            StrInput(
+                name="model_name",
+                display_name="Model Name",
+                value="",
+                required=True,
+            ),
+            SecretStrInput(
+                name="api_key",
+                display_name="API Key",
+                info="API key",
+                value="EMPTY",
+            ),
+            FloatInput(
+                name="temperature",
+                display_name="Temperature",
+                value=0.1,
+            ),
+            IntInput(
+                name="max_tokens",
+                display_name="Max Tokens",
+                value=4096,
+                advanced=True,
+            ),
+        ]
+
+        def build_model(self) -> LanguageModel:
+            return ChatOpenAI(
+                api_key=self.api_key or "EMPTY",
+                model=self.model_name,
+                base_url=self.api_base,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens if self.max_tokens > 0 else None,
+                timeout=120,
+            )
+{{- end }}

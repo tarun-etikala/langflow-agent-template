@@ -65,6 +65,11 @@ trap "rm -rf $BUILD_DIR" EXIT
 
 cp "$FLOW_FILE" "$BUILD_DIR/flow.json"
 
+# Copy custom components if they exist
+if [ -d "$PROJECT_ROOT/custom_components" ]; then
+  cp -r "$PROJECT_ROOT/custom_components" "$BUILD_DIR/custom_components"
+fi
+
 # Rewrite model endpoints for target namespace
 if [ -n "$TARGET_NAMESPACE" ]; then
   echo "Rewriting model endpoints for namespace: $TARGET_NAMESPACE"
@@ -136,8 +141,12 @@ RUN mkdir -p /app/langflow-config-dir /app/flows
 # Copy the flow into the image
 COPY flow.json /app/flows/flow.json
 
+# Copy custom components for sidebar availability
+COPY custom_components/ /app/custom_components/
+
 # Set environment variables for the flow
 ENV LANGFLOW_LOAD_FLOWS_PATH=/app/flows
+ENV LANGFLOW_COMPONENTS_PATH=/app/custom_components
 ENV LANGFLOW_AUTO_LOGIN=true
 ENV LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true
 ENV LANGFLOW_CONFIG_DIR=/app/langflow-config-dir

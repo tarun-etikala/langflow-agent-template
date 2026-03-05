@@ -18,8 +18,10 @@ services:
       LANGFUSE_HOST: "http://langfuse:3000"
       LANGFUSE_PUBLIC_KEY: "pk-lf-local-dev"
       LANGFUSE_SECRET_KEY: "sk-lf-local-dev"
+      LANGFLOW_COMPONENTS_PATH: "/app/custom_components"
     volumes:
       - langflow_data:/var/lib/langflow
+      - ../custom_components:/app/custom_components:ro
     depends_on:
       postgres:
         condition: service_healthy

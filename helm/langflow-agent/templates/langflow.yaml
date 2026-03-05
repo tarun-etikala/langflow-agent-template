@@ -80,6 +80,8 @@ spec:
             - name: LANGFLOW_SKIP_AUTH_AUTO_LOGIN
               value: "true"
             {{- end }}
+            - name: LANGFLOW_COMPONENTS_PATH
+              value: "/app/custom_components"
             {{- if .Values.langfuse.enabled }}
             - name: LANGFUSE_HOST
               value: "http://{{ .Release.Name }}-langfuse:3000"
@@ -103,6 +105,8 @@ spec:
               mountPath: /tmp
             - name: cache
               mountPath: /.cache
+            - name: custom-components
+              mountPath: /app/custom_components
           startupProbe:
             httpGet:
               path: /health
@@ -130,6 +134,9 @@ spec:
           emptyDir: {}
         - name: cache
           emptyDir: {}
+        - name: custom-components
+          configMap:
+            name: {{ .Release.Name }}-custom-components
 ---
 # Langflow Service
 apiVersion: v1
